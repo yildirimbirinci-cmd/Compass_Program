@@ -26,7 +26,9 @@ def _activate_engine():
 def create_cad_viewport(*args, **kwargs):
     """Create the native drawing view for Compass's Drawing Area."""
     _activate_engine()
-    return importlib.import_module("src.cad.viewport").CadViewport(*args, **kwargs)
+    # The entry module installs Plan3D's runtime patches; instantiate only
+    # its CAD widget, without the standalone window or its buttons.
+    return importlib.import_module("src.app.main").CadViewport(*args, **kwargs)
 
 
 def analyze_facade_windows(viewport, facade_rects, floor_settings, *, measurement_layer="C Ölçü"):
@@ -45,6 +47,12 @@ def configure_exterior_door_layers(viewport, layer_names):
     viewport._exterior_door_layers = names
 
 
+def analyze_floor_areas(export_panel):
+    """Run the bundled Plan3D floor-area engine for confirmed floor regions."""
+    _activate_engine()
+    return importlib.import_module("floor_area_runtime").show_all_floor_areas(export_panel)
+
+
 def prepare_max_transfer(export_panel):
     """Prepare the existing Plan3D MaxScript bridge from an assigned project.
 
@@ -52,5 +60,18 @@ def prepare_max_transfer(export_panel):
     plan/facade assignments and pivots. This function does not execute Max.
     """
     _activate_engine()
+    assignments = getattr(export_panel, "_assignments", {})
+    facades = assignments.get("facades", {})
+    settings = getattr(export_panel, "_floor_settings", {})
+    if not facades or not settings:
+        raise ValueError("Assign facades and floor plans before Max transfer")
+    page = export_panel.parentWidget()
+    viewport = getattr(page, "viewport", None)
+    if viewport is None:
+        raise ValueError("Drawing viewport is unavailable")
+    analysis = analyze_facade_windows(viewport, facades, settings)
+    if not isinstance(getattr(export_panel, "_analysis_results", None), dict):
+        export_panel._analysis_results = {}
+    export_panel._analysis_results["facade_windows_all_floors"] = analysis
     bridge = importlib.import_module("plan3d_max_bridge")
     return bridge.prepare_wall_only_transfer(export_panel)
