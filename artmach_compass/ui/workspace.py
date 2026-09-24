@@ -259,11 +259,12 @@ class LibraryProjectTabs(QWidget):
     """Persistent Library / Project / AI tabs with one sliding indicator."""
 
     mode_requested = Signal(str)
-    TAB_ORDER = ("library", "project", "ai")
+    TAB_ORDER = ("library", "project", "ai", "plan3d")
     TAB_LABELS = {
         "library": "Library",
         "project": "Project",
         "ai": "AI",
+        "plan3d": "Plan3D",
     }
     INDICATOR_WIDTH = 30.0
 
@@ -988,6 +989,7 @@ class LibraryProjectFlipPanel(QFrame):
     library_requested = Signal(str)
     project_requested = Signal(str)
     ai_requested = Signal(str)
+    plan3d_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1033,6 +1035,22 @@ class LibraryProjectFlipPanel(QFrame):
         self.ai_face.setObjectName("aiFace")
         self.ai_face.row_clicked.connect(self.ai_requested)
         self.ai_face.hide()
+
+        self.plan3d_face = PanelFace(
+            eyebrow="COMPASS / PLAN3D",
+            title="Plan3D",
+            subtitle="CAD plans and 3D export",
+            rows=(
+                ("New Project", "NEW"),
+                ("Open Project", "OPEN"),
+                ("Save Project", "SAVE"),
+            ),
+            footer="Plan3D workspace",
+            parent=self,
+        )
+        self.plan3d_face.setObjectName("plan3dFace")
+        self.plan3d_face.row_clicked.connect(self.plan3d_requested)
+        self.plan3d_face.hide()
 
         # Fixed edge rail: visually identical to the former face-owned rail,
         # but parented to the non-rotating panel shell. The gray line and the
@@ -1165,6 +1183,7 @@ class LibraryProjectFlipPanel(QFrame):
             "library": self.library_face,
             "project": self.projects_face,
             "ai": self.ai_face,
+            "plan3d": self.plan3d_face,
         }
         visible_face = faces[visible_mode]
         for mode, face in faces.items():
@@ -1211,8 +1230,11 @@ class LibraryProjectFlipPanel(QFrame):
         self._sync_edge_scrollbar()
         self.update()
 
+    def select_mode(self, mode: str) -> None:
+        self._request_mode(mode)
+
     def _request_mode(self, mode: str) -> None:
-        if mode not in {"library", "project", "ai"}:
+        if mode not in {"library", "project", "ai", "plan3d"}:
             return
         if self._flip_animation.state() == QAbstractAnimation.Running:
             return
@@ -2142,13 +2164,15 @@ class CompassWorkspace(QWidget):
 
         # This order is the contract that prevents another left/center mix-up.
         self._layout.addWidget(self.left_panel, 0)
-        self._layout.addWidget(self.center_panel, 1)
+        self._center_stack = QStackedWidget(self.body)
+        self._center_stack.addWidget(self.center_panel)
+        self._layout.addWidget(self._center_stack, 1)
         self._layout.addWidget(self.right_panel, 0)
-        self._mode_stack = QStackedWidget(self)
-        self._mode_stack.addWidget(self.body)
-        shell.addWidget(self._mode_stack, 1)
+        shell.addWidget(self.body, 1)
         self._plan3d_window = None
         self.top_bar.mode_requested.connect(self._switch_mode)
+        self.left_panel.face_changed.connect(self._activate_mode)
+        self.left_panel.plan3d_requested.connect(self._plan3d_command)
 
         self.status_bar = BottomStatusBar(self)
         shell.addWidget(self.status_bar)
@@ -2159,21 +2183,49 @@ class CompassWorkspace(QWidget):
         self._apply_responsive_layout(1560, 1150)
 
     def _switch_mode(self, mode: str) -> None:
-        if mode != "PLAN3D":
-            self._mode_stack.setCurrentWidget(self.body)
-            self.top_bar.set_active_mode(mode)
+        target = {
+            "LIBRARY": "library",
+            "PROJECTS": "project",
+            "AI": "ai",
+            "PLAN3D": "plan3d",
+        }.get(mode)
+        if target is not None:
+            self.left_panel.select_mode(target)
+
+    def _activate_mode(self, mode: str) -> None:
+        if mode == "plan3d":
+            if self._plan3d_window is None:
+                try:
+                    from artmach_compass.plan3d_integration import create_plan3d_window
+                    self._plan3d_window = create_plan3d_window()
+                    self._center_stack.addWidget(self._plan3d_window)
+                except Exception as exc:
+                    QMessageBox.warning(self, "Plan3D", str(exc))
+                    self.left_panel.select_mode("library")
+                    return
+            self.right_panel.hide()
+            self._center_stack.setCurrentWidget(self._plan3d_window)
+        else:
+            self._center_stack.setCurrentWidget(self.center_panel)
+            self.right_panel.show()
+        self.top_bar.set_active_mode({
+            "library": "LIBRARY",
+            "project": "PROJECTS",
+            "ai": "AI",
+            "plan3d": "PLAN3D",
+        }[mode])
+
+    def _plan3d_command(self, action: str) -> None:
+        window = self._plan3d_window
+        if window is None:
             return
-        if self._plan3d_window is None:
-            try:
-                from artmach_compass.plan3d_integration import create_plan3d_window
-                self._plan3d_window = create_plan3d_window()
-                self._mode_stack.addWidget(self._plan3d_window)
-            except Exception as exc:
-                QMessageBox.warning(self, "Plan3D", str(exc))
-                self.top_bar.set_active_mode("LIBRARY")
-                return
-        self._mode_stack.setCurrentWidget(self._plan3d_window)
-        self.top_bar.set_active_mode("PLAN3D")
+        method = {
+            "New Project": "new_project",
+            "Open Project": "open_project",
+            "Save Project": "save_project",
+        }.get(action)
+        if method:
+            getattr(window, method)()
 
     def set_standby_mode(self, active: bool, *, animated: bool = True) -> None:
         self._standby_active = False
@@ -2218,7 +2270,7 @@ class CompassWorkspace(QWidget):
         self._layout.setContentsMargins(8, 6, 8, 8)
         self._layout.setSpacing(5)
         self.left_panel.set_edge_alignment(5)
-        for panel in (self.left_panel, self.center_panel, self.right_panel):
+        for panel in (self.left_panel, self._center_stack, self.right_panel):
             panel.setMinimumWidth(0)
             panel.setMaximumWidth(16_777_215)
             panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -2237,5 +2289,5 @@ class CompassWorkspace(QWidget):
         self.right_panel.setFixedWidth(side_width)
         self.left_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.right_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.center_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._center_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 

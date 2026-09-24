@@ -36,4 +36,5 @@ def create_plan3d_window() -> QMainWindow:
     module = importlib.import_module("src.app.main")
     window = module.MainWindow()
     window.setWindowTitle("Plan3D")
+    window.setMinimumSize(0, 0)
     return window
