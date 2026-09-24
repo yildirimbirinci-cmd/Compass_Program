@@ -258,12 +258,12 @@ class LibraryProjectTabs(QWidget):
     """Persistent Library / Project / AI tabs with one sliding indicator."""
 
     mode_requested = Signal(str)
-    TAB_ORDER = ("library", "project", "ai", "plan3d")
+    TAB_ORDER = ("library", "project", "plan3d", "ai")
     TAB_LABELS = {
         "library": "Library",
         "project": "Project",
-        "ai": "AI",
         "plan3d": "Plan3D",
+        "ai": "AI",
     }
     INDICATOR_WIDTH = 30.0
 
@@ -2044,10 +2044,10 @@ class TopCommandBar(QFrame):
 
         self.mode_buttons = {}
         for text, subtitle, active in (
-            ("AI", "Yapay Zeka", False),
-            ("PROJECTS", "Projeler", False),
             ("LIBRARY", "Kütüphane", True),
+            ("PROJECTS", "Projeler", False),
             ("PLAN3D", "CAD to 3D", False),
+            ("AI", "Yapay Zeka", False),
         ):
             button = QPushButton(f"{text}\n{subtitle}", self)
             button.setObjectName("topModeButton")
