@@ -1753,6 +1753,64 @@ class AssetPreviewDetailPanel(QFrame):
         self._values["Preview"].setText("Panel 9")
 
 
+class Plan3DEyeButton(QToolButton):
+    """Layer visibility control drawn at the display's native resolution."""
+
+    def __init__(self, visible: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("plan3dEyeButton")
+        self.setCheckable(True)
+        self.setChecked(visible)
+        self.setFixedSize(25, 22)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        color = QColor("#e0e0e0" if self.isChecked() else "#858585")
+        painter.setPen(QPen(color, 1.35))
+        painter.setBrush(Qt.NoBrush)
+        width, height = self.width(), self.height()
+        outline = QPainterPath()
+        outline.moveTo(4.5, height / 2)
+        outline.cubicTo(8, 5.5, width - 8, 5.5, width - 4.5, height / 2)
+        outline.cubicTo(width - 8, height - 5.5, 8, height - 5.5, 4.5, height / 2)
+        painter.drawPath(outline)
+        painter.setBrush(color if self.isChecked() else Qt.NoBrush)
+        painter.drawEllipse(QRectF(width / 2 - 2.7, height / 2 - 2.7, 5.4, 5.4))
+
+
+class Plan3DPanelButton(QToolButton):
+    """Compact close and refresh icons for the tool-panel headers."""
+
+    def __init__(self, symbol: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.symbol = symbol
+        self.setObjectName("plan3dHeaderButton")
+        self.setFixedSize(27, 26)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        color = QColor("#f39743" if self.underMouse() else "#d2d2d2")
+        painter.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        if self.symbol == "close":
+            painter.drawLine(QPointF(9, 9), QPointF(18, 17))
+            painter.drawLine(QPointF(18, 9), QPointF(9, 17))
+        elif self.symbol == "refresh":
+            arc = QPainterPath()
+            arc.moveTo(18.5, 10)
+            arc.cubicTo(16.8, 6.5, 11.8, 6.2, 9, 9)
+            arc.cubicTo(5.5, 12.5, 8.4, 18.7, 13.5, 19)
+            arc.cubicTo(16.1, 19.1, 18.2, 17.3, 19.2, 15.3)
+            painter.drawPath(arc)
+            painter.drawLine(QPointF(18.5, 10), QPointF(18.4, 5.9))
+            painter.drawLine(QPointF(18.5, 10), QPointF(14.6, 9.4))
+
+
 class Plan3DLayerRow(QFrame):
     """Compact eye, semantic swatch and assignment control."""
 
@@ -1847,6 +1905,7 @@ class Plan3DToolPanel(QFrame):
         if title == "Layers":
             refresh = Plan3DPanelButton("refresh", header)
             refresh.setToolTip("Refresh layers")
+            refresh.clicked.connect(self.refresh_layers)
             header_layout.addWidget(refresh)
         close_button = Plan3DPanelButton("close", header)
         close_button.setToolTip("Close " + title)
@@ -1884,6 +1943,11 @@ class Plan3DToolPanel(QFrame):
             row.eye.toggled.connect(self._layer_changed)
             row.semantic.currentTextChanged.connect(self._layer_changed)
         self.body_layout.addStretch(1)
+
+    def refresh_layers(self) -> None:
+        strip = self.parent()
+        if isinstance(strip, Plan3DToolStrip):
+            self.set_layers(list(strip.layer_state))
 
     def _layer_changed(self, *_args) -> None:
         strip = self.parent()
@@ -2286,6 +2350,20 @@ class CenterWorkspacePanel(QFrame):
         if tool in Plan3DToolStrip.ORDER:
             self.set_workspace_mode("plan3d")
             self._plan3d_tools.open_panel(tool)
+            panel = self._plan3d_tools._panels.get(tool)
+            if panel is not None and tool == "Properties":
+                viewport = self._active_plan3d_viewport
+                drawing = Path(str(getattr(viewport, "_source_path", "") or "")) if viewport is not None else None
+                panel.set_fields([
+                    ("Drawing", drawing.name if drawing and drawing.name else "No drawing open"),
+                    ("Layers", str(len(viewport.get_layer_names())) if viewport is not None else "0"),
+                    ("Format", drawing.suffix.upper().lstrip(".") if drawing and drawing.suffix else "—"),
+                ])
+            elif panel is not None and tool == "Export Details":
+                panel.set_fields([
+                    ("Drawing", "Loaded" if self._active_plan3d_viewport is not None else "No drawing open"),
+                    ("Export", "Awaiting project assignments"),
+                ])
             self._update_plan3d_tool_visibility()
             self._plan3d_tools.raise_()
             self.layout().activate()
