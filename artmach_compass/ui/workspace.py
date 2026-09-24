@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from artmach_compass.core.thumbnail_manager import ThumbnailManager
@@ -9,6 +11,7 @@ from artmach_compass.core.asset_pairing import resolve_max_for_thumbnail
 from artmach_compass.core.preview_generator import PreviewGenerationThread
 from artmach_compass.core.app_logging import get_logger
 from artmach_compass.ui.model_viewer import Model3DViewer
+from artmach_compass.plan3d_embedded import create_embedded_plan3d_viewport
 
 from artmach_compass.core.library_catalog import (
     configured_library_path,
@@ -42,6 +45,7 @@ from PySide6.QtGui import (
     QImage,
     QLinearGradient,
     QPainter,
+    QTransform,
     QPainterPath,
     QPen,
     QPixmap,
@@ -51,6 +55,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QBoxLayout,
+    QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
@@ -60,6 +65,12 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QLineEdit,
+    QFileDialog,
+    QMessageBox,
+    QListWidget,
+    QListWidgetItem,
+    QWidgetAction,
+    QMenu,
     QToolButton,
     QScrollArea,
     QScrollBar,
@@ -258,10 +269,11 @@ class LibraryProjectTabs(QWidget):
     """Persistent Library / Project / AI tabs with one sliding indicator."""
 
     mode_requested = Signal(str)
-    TAB_ORDER = ("library", "project", "ai")
+    TAB_ORDER = ("library", "project", "plan3d", "ai")
     TAB_LABELS = {
         "library": "Library",
         "project": "Project",
+        "plan3d": "Plan3D",
         "ai": "AI",
     }
     INDICATOR_WIDTH = 30.0
@@ -354,7 +366,7 @@ class LibraryProjectTabs(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         font = painter.font()
-        font.setPointSizeF(12.0)
+        font.setPointSizeF(10.0)
         font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(font)
 
@@ -422,6 +434,57 @@ class PanelFace(QFrame):
         for row_key, row in self.rows.items():
             row.set_active(row_key == key)
         self.row_clicked.emit(key)
+
+
+class Plan3DMenuFace(QFrame):
+    """Plan3D commands in the same left panel and NavigationRow style."""
+
+    command_requested = Signal(str)
+    MENUS = (
+        ("File", ("New Project", "Open Project", "Save Project",
+                  "Save As Project", "Close Project")),
+        ("Edit", ("Undo", "Redo")),
+        ("Tools", ("Layers", "Properties", "Export Details")),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("flipPanelFace")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 0, 0, 18)
+        layout.setSpacing(4)
+        self._groups: dict[str, QWidget] = {}
+        self._commands: dict[str, NavigationRow] = {}
+        for title, commands in self.MENUS:
+            header = NavigationRow(title, parent=self)
+            header.clicked.connect(self._toggle)
+            layout.addWidget(header, 0, Qt.AlignLeft)
+            children = QWidget(self)
+            child_layout = QVBoxLayout(children)
+            child_layout.setContentsMargins(14, 0, 0, 0)
+            child_layout.setSpacing(4)
+            for command in commands:
+                row = NavigationRow(command, parent=children)
+                row.clicked.connect(self._select_command)
+                self._commands[command] = row
+                child_layout.addWidget(row, 0, Qt.AlignLeft)
+            children.hide()
+            self._groups[title] = children
+            layout.addWidget(children)
+        layout.addStretch(1)
+
+    def _toggle(self, title: str) -> None:
+        group = self._groups[title]
+        opening = not group.isVisible()
+        for other in self._groups.values():
+            other.hide()
+        group.setVisible(opening)
+
+    def _select_command(self, command: str) -> None:
+        row = self._commands[command]
+        row.set_active(True)
+        QTimer.singleShot(240, lambda selected=row: selected.set_active(False))
+        self.command_requested.emit(command)
 
 
 class PrecisionScrollArea(QScrollArea):
@@ -987,6 +1050,7 @@ class LibraryProjectFlipPanel(QFrame):
     library_requested = Signal(str)
     project_requested = Signal(str)
     ai_requested = Signal(str)
+    plan3d_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1032,6 +1096,11 @@ class LibraryProjectFlipPanel(QFrame):
         self.ai_face.setObjectName("aiFace")
         self.ai_face.row_clicked.connect(self.ai_requested)
         self.ai_face.hide()
+
+        self.plan3d_face = Plan3DMenuFace(parent=self)
+        self.plan3d_face.setObjectName("plan3dFace")
+        self.plan3d_face.command_requested.connect(self.plan3d_requested)
+        self.plan3d_face.hide()
 
         # Fixed edge rail: visually identical to the former face-owned rail,
         # but parented to the non-rotating panel shell. The gray line and the
@@ -1164,6 +1233,7 @@ class LibraryProjectFlipPanel(QFrame):
             "library": self.library_face,
             "project": self.projects_face,
             "ai": self.ai_face,
+            "plan3d": self.plan3d_face,
         }
         visible_face = faces[visible_mode]
         for mode, face in faces.items():
@@ -1210,8 +1280,11 @@ class LibraryProjectFlipPanel(QFrame):
         self._sync_edge_scrollbar()
         self.update()
 
+    def select_mode(self, mode: str) -> None:
+        self._request_mode(mode)
+
     def _request_mode(self, mode: str) -> None:
-        if mode not in {"library", "project", "ai"}:
+        if mode not in {"library", "project", "ai", "plan3d"}:
             return
         if self._flip_animation.state() == QAbstractAnimation.Running:
             return
@@ -1680,6 +1753,248 @@ class AssetPreviewDetailPanel(QFrame):
         self._values["Preview"].setText("Panel 9")
 
 
+class Plan3DLayerRow(QFrame):
+    """Compact eye, semantic swatch and assignment control."""
+
+    def __init__(self, name: str, semantic: str = "Unassigned",
+                 visible: bool = True, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("plan3dLayerRow")
+        self.setFixedHeight(28)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(4, 1, 4, 1)
+        row.setSpacing(6)
+        self.eye = Plan3DEyeButton(visible, self)
+        row.addWidget(self.eye)
+        self.swatch = QFrame(self)
+        self.swatch.setFixedSize(6, 20)
+        row.addWidget(self.swatch)
+        name_label = QLabel(name, self)
+        self.name_label = name_label
+        name_label.setObjectName("plan3dLayerName")
+        name_label.setMinimumWidth(0)
+        row.addWidget(name_label, 1)
+        self.semantic = QComboBox(self)
+        self.semantic.setObjectName("plan3dSemantic")
+        self.semantic.addItems(("Wall", "Exterior Wall", "Facade", "Window", "Door",
+                                "Sliding Door", "Stair", "Detail", "Furniture", "Roof",
+                                "Unassigned"))
+        self.semantic.setCurrentText(semantic if semantic in
+                                     [self.semantic.itemText(i) for i in range(self.semantic.count())]
+                                     else "Unassigned")
+        self.semantic.setMinimumWidth(86)
+        self.semantic.setMaximumWidth(112)
+        self.semantic.currentTextChanged.connect(self._update_swatch)
+        self._update_swatch(self.semantic.currentText())
+        row.addWidget(self.semantic)
+
+    def _update_swatch(self, semantic: str) -> None:
+        color = {"Wall": "#518fff", "Exterior Wall": "#aeb2b6",
+                 "Facade": "#315b85", "Window": "#ffb866", "Door": "#64c790",
+                 "Sliding Door": "#348367", "Stair": "#ffe18b",
+                 "Detail": "#edb7d2", "Furniture": "#c7af59",
+                 "Roof": "#ec7075"}.get(semantic, "#d6d6d6")
+        self.swatch.setStyleSheet("background-color: " + color + ";")
+
+
+class Plan3DToolPanel(QFrame):
+    """Compact Plan3D-inspired panel with fixed header and scrollable content."""
+
+    closed = Signal(str)
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.title = title
+        self.setObjectName("plan3dToolPanel")
+        self.setStyleSheet("""
+            QFrame#plan3dToolPanel { background: #151515; border: 1px solid #383838; border-radius: 8px; }
+            QFrame#plan3dToolHeader { background: #1b1b1b; border: none;
+                                      border-bottom: 1px solid #383838; border-top-left-radius: 8px; border-top-right-radius: 8px; }
+            QLabel#plan3dPanelTitle { background: transparent; color: #d0d0d0; font-size: 11px;
+                                       font-weight: 600; border: none; }
+            QLabel#plan3dLayerName { background: transparent; color: #f1f1f1; font-size: 10px; border: none; }
+            QLabel#plan3dFieldName { background: transparent; color: #a6a6a6; font-size: 10px; border: none; }
+            QLabel#plan3dFieldValue { background: transparent; color: #eeeeee; font-size: 10px; border: none; }
+            QFrame#plan3dLayerRow { background: #202020; border: none;
+                                     border-bottom: 1px solid #383838; border-radius: 4px; }
+            QToolButton#plan3dHeaderButton { background: transparent;
+                border: none; border-radius: 5px; padding: 0; }
+            QToolButton#plan3dHeaderButton:hover { background: #3b3b3b; }
+            QToolButton#plan3dEyeButton { background: transparent;
+                border: none; border-radius: 5px; padding: 0; }
+            QToolButton#plan3dEyeButton:hover { background: #3b3b3b; }
+            QToolButton#plan3dEyeButton:checked { background: #303030; }
+            QComboBox#plan3dSemantic { color: #f5f5f5; background: #202020;
+                border: 1px solid #383838; border-radius: 4px; padding: 2px 5px; font-size: 10px; }
+            QComboBox#plan3dSemantic QAbstractItemView { background: #202020;
+                color: #eeeeee; selection-background-color: #404040; }
+            QScrollArea { border: none; background: #151515; }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        header = QFrame(self)
+        header.setObjectName("plan3dToolHeader")
+        header.setFixedHeight(28)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 0, 0, 0)
+        header_layout.setSpacing(2)
+        label = QLabel(title, header)
+        label.setObjectName("plan3dPanelTitle")
+        label.setAttribute(Qt.WA_TranslucentBackground, True)
+        header_layout.addWidget(label)
+        header_layout.addStretch(1)
+        if title == "Layers":
+            refresh = Plan3DPanelButton("refresh", header)
+            refresh.setToolTip("Refresh layers")
+            header_layout.addWidget(refresh)
+        close_button = Plan3DPanelButton("close", header)
+        close_button.setToolTip("Close " + title)
+        close_button.clicked.connect(lambda: self.closed.emit(self.title))
+        header_layout.addWidget(close_button)
+        layout.addWidget(header)
+        self.content = PrecisionScrollArea(self)
+        self.content.setWidgetResizable(True)
+        self.content.setFrameShape(QFrame.NoFrame)
+        self.content.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scrollbar = ReactiveScrollBar(
+            Qt.Vertical, self.content,
+            hide_handle_when_idle=True, gradient_track=True,
+        )
+        self.content.setVerticalScrollBar(scrollbar)
+        self.content.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.body = QWidget(self.content)
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(4, 5, 4, 5)
+        self.body_layout.setSpacing(3)
+        self.body_layout.addStretch(1)
+        self.layer_rows = []
+        self.content.setWidget(self.body)
+        layout.addWidget(self.content, 1)
+
+    def set_layers(self, layers: list[tuple[str, str, bool]]) -> None:
+        if self.title != "Layers":
+            return
+        self._clear_body()
+        self.layer_rows = []
+        for name, semantic, visible in layers:
+            row = Plan3DLayerRow(name, semantic, visible, self.body)
+            self.layer_rows.append(row)
+            self.body_layout.addWidget(row)
+            row.eye.toggled.connect(self._layer_changed)
+            row.semantic.currentTextChanged.connect(self._layer_changed)
+        self.body_layout.addStretch(1)
+
+    def _layer_changed(self, *_args) -> None:
+        strip = self.parent()
+        if isinstance(strip, Plan3DToolStrip):
+            strip.layer_state = [(row.name_label.text(), row.semantic.currentText(),
+                                  row.eye.isChecked()) for row in self.layer_rows]
+            if strip.layer_edited is not None:
+                strip.layer_edited("Layer setting changed")
+
+    def set_fields(self, fields: list[tuple[str, str]]) -> None:
+        if self.title == "Layers":
+            return
+        self._clear_body()
+        for name, value in fields:
+            item = QFrame(self.body)
+            item.setStyleSheet("background: #1b1b1b; border: none;")
+            fields_layout = QVBoxLayout(item)
+            fields_layout.setContentsMargins(6, 3, 6, 3)
+            fields_layout.setSpacing(1)
+            label = QLabel(name, item)
+            label.setObjectName("plan3dFieldName")
+            fields_layout.addWidget(label)
+            field_value = QLabel(value, item)
+            field_value.setObjectName("plan3dFieldValue")
+            field_value.setWordWrap(True)
+            fields_layout.addWidget(field_value)
+            self.body_layout.addWidget(item)
+        self.body_layout.addStretch(1)
+
+    def _clear_body(self) -> None:
+        while self.body_layout.count():
+            item = self.body_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+
+
+
+class Plan3DToolStrip(QFrame):
+    """Open panels stay in canonical order and share available width."""
+
+    panels_changed = Signal(bool)
+
+    ORDER = ("Layers", "Properties", "Export Details")
+    # Temporary UI examples. Replace with actual DWG layer data when connected.
+    DEMO_LAYERS = (
+        ("KP Duvarlar", "Wall", True),
+        ("KP Dış Duvar", "Exterior Wall", True),
+        ("C Arka", "Facade", True),
+        ("C Sağ", "Facade", True),
+        ("C Sol", "Facade", True),
+        ("C Ön", "Facade", True),
+        ("C Pencereler", "Window", True),
+        ("KP pencereler", "Window", True),
+        ("C Dış Kapılar", "Door", True),
+        ("KP Dış Kapılar", "Door", True),
+        ("KP İç Kapılar", "Door", True),
+        ("C Sliding Doors", "Sliding Door", True),
+        ("KP Sliding Doors", "Sliding Door", True),
+        ("KP Merdiven", "Stair", True),
+        ("KP Detay", "Detail", True),
+        ("KP Mobilyalar", "Furniture", True),
+        ("KP Çatı", "Roof", True),
+        ("KP Çatı Pencereler", "Roof", True),
+        ("0", "Unassigned", False),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("assetPreviewDetailPanel")
+        self.setMinimumHeight(150)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(8, 8, 8, 8)
+        self._layout.setSpacing(8)
+        self._panels: dict[str, Plan3DToolPanel] = {}
+        self.layer_state = list(self.DEMO_LAYERS)
+        self.layer_edited = None
+
+    def open_panel(self, title: str) -> None:
+        if title not in self.ORDER:
+            return
+        if title in self._panels:
+            self._panels[title].show()
+            self._panels[title].raise_()
+            self.updateGeometry()
+            self.panels_changed.emit(True)
+            return
+        panel = Plan3DToolPanel(title, self)
+        if title == "Layers":
+            panel.set_layers(list(self.layer_state))
+        panel.closed.connect(self.close_panel)
+        self._panels[title] = panel
+        index = sum(name in self._panels for name in self.ORDER[:self.ORDER.index(title)])
+        self._layout.insertWidget(index, panel, 1)
+        panel.show()
+        self.updateGeometry()
+        self.panels_changed.emit(True)
+
+    def close_panel(self, title: str) -> None:
+        panel = self._panels.pop(title, None)
+        if panel is not None:
+            if title == "Layers":
+                self.layer_state = [(row.name_label.text(), row.semantic.currentText(),
+                                     row.eye.isChecked()) for row in panel.layer_rows]
+            self._layout.removeWidget(panel)
+            panel.hide()
+            panel.deleteLater()
+            self.updateGeometry()
+            self.panels_changed.emit(bool(self._panels))
+
+
 class CenterWorkspacePanel(QFrame):
     """Center composition: 7 and 9 equal on top, 8 spanning below."""
 
@@ -1697,6 +2012,7 @@ class CenterWorkspacePanel(QFrame):
         layout.setSpacing(8)
 
         top_row = QWidget(self)
+        self._top_row = top_row
         top_layout = QHBoxLayout(top_row)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(8)
@@ -1704,19 +2020,27 @@ class CenterWorkspacePanel(QFrame):
         self._thumbnail_frame = QFrame(top_row)
         self._thumbnail_frame.setObjectName("centerSubPanel")
         thumbnail_layout = QVBoxLayout(self._thumbnail_frame)
+        self._drawing_layout = thumbnail_layout
         thumbnail_layout.setContentsMargins(10, 10, 10, 10)
         thumbnail_layout.setSpacing(8)
-        thumbnail_layout.addWidget(_label("THUMBNAIL / ASSET KARTLARI", "panelEyebrow"))
+        self._drawing_heading = _label("THUMBNAILS / ASSET CARDS", "panelEyebrow")
+        self._drawing_heading.setStyleSheet("font-size: 12pt;")
+        self._drawing_heading.setFixedHeight(22)
+        self._drawing_heading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        thumbnail_layout.addWidget(self._drawing_heading, 0, Qt.AlignTop)
         self._thumbnail_browser = ThumbnailBrowser(self._thumbnail_frame)
         self._thumbnail_browser.asset_selected.connect(self._open_asset_preview)
         thumbnail_layout.addWidget(self._thumbnail_browser, 1)
+        self._active_plan3d_viewport = None
 
         self._viewer_frame = QFrame(top_row)
         self._viewer_frame.setObjectName("centerSubPanel")
         viewer_layout = QVBoxLayout(self._viewer_frame)
         viewer_layout.setContentsMargins(10, 10, 10, 10)
         viewer_layout.setSpacing(8)
-        viewer_layout.addWidget(_label("ANA 3D VIEWER / ÇALIŞMA ALANI", "panelEyebrow"))
+        viewer_heading = _label("MAIN 3D VIEWER / WORKSPACE", "panelEyebrow")
+        viewer_heading.setStyleSheet("font-size: 12pt;")
+        viewer_layout.addWidget(viewer_heading)
         # Two pages: a flat 2D thumbnail fallback (no matching GLB yet) and the
         # real interactive 3D viewport (GLB preview available). Previously this
         # panel only ever showed the JPEG thumbnail, even after a GLB existed.
@@ -1754,6 +2078,19 @@ class CenterWorkspacePanel(QFrame):
         self._detail_panel = AssetPreviewDetailPanel(self)
         layout.addWidget(top_row, 3)
         layout.addWidget(self._detail_panel, 2)
+        self._plan3d_tools = Plan3DToolStrip(self)
+        layout.addWidget(self._plan3d_tools, 2)
+        self._plan3d_tools.panels_changed.connect(self._update_plan3d_tool_visibility)
+        self._plan3d_tools.hide()
+        self._ai_placeholder = QFrame(self)
+        self._ai_placeholder.setObjectName("centerSubPanel")
+        placeholder_layout = QVBoxLayout(self._ai_placeholder)
+        placeholder_label = QLabel("Under Development", self._ai_placeholder)
+        placeholder_label.setAlignment(Qt.AlignCenter)
+        placeholder_label.setStyleSheet("color: #c7ced1; font-size: 18pt; font-weight: 500;")
+        placeholder_layout.addWidget(placeholder_label, 1)
+        layout.addWidget(self._ai_placeholder, 1)
+        self._ai_placeholder.hide()
         self._current_mode = "library"
         self._selected_thumbnail_path = ""
         self._resolved_max_path = ""
@@ -1767,7 +2104,195 @@ class CenterWorkspacePanel(QFrame):
     def thumbnail_browser(self) -> ThumbnailBrowser:
         return self._thumbnail_browser
 
+    def set_workspace_mode(self, mode: str) -> None:
+        plan3d = mode == "plan3d"
+        self._top_row.setVisible(mode != "ai")
+        self._ai_placeholder.setVisible(mode == "ai")
+        self._viewer_frame.setVisible(mode not in ("plan3d", "ai"))
+        self._thumbnail_browser.setVisible(not plan3d)
+        if self._active_plan3d_viewport is not None:
+            self._active_plan3d_viewport.setVisible(plan3d)
+        self._drawing_heading.setText("DRAWING AREA" if plan3d else "THUMBNAILS / ASSET CARDS")
+        self._thumbnail_frame.setStyleSheet(
+            "QFrame#centerSubPanel { background-color: #151515; "
+            "border: 1px solid #383838; border-radius: 9px; }"
+            if plan3d else ""
+        )
+        self._detail_panel.setVisible(mode not in ("plan3d", "ai"))
+        self._current_mode = mode
+        self._update_plan3d_tool_visibility()
+        if plan3d:
+            QTimer.singleShot(0, self._thumbnail_browser.refresh_layout)
+
+    def _update_plan3d_tool_visibility(self, *_args) -> None:
+        visible = self._current_mode == "plan3d" and bool(self._plan3d_tools._panels)
+        self._plan3d_tools.setMinimumHeight(180 if visible else 0)
+        self._plan3d_tools.setVisible(visible)
+        if visible:
+            for panel in self._plan3d_tools._panels.values():
+                panel.show()
+            self._plan3d_tools.updateGeometry()
+        self.layout().activate()
+
+    def new_plan3d_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "New Project — Select CAD Drawing",
+            str(Path.home() / "Desktop"),
+            "CAD Drawings (*.dwg *.dxf);;DWG (*.dwg);;DXF (*.dxf)",
+        )
+        if not path:
+            return
+        viewport = None
+        try:
+            viewport = create_embedded_plan3d_viewport(self._thumbnail_frame)
+            viewport.load_file(path)
+        except Exception as exc:
+            if viewport is not None:
+                viewport.deleteLater()
+            self._show_plan3d_warning(str(exc))
+            return
+        previous = self._active_plan3d_viewport
+        if previous is not None:
+            self._drawing_layout.removeWidget(previous)
+            previous.hide()
+        self._active_plan3d_viewport = viewport
+        self._drawing_layout.addWidget(viewport, 1)
+        try:
+            self._plan3d_tools.layer_state = [
+                (name, viewport.get_layer_type(name), viewport.is_layer_selected(name))
+                for name in viewport.get_layer_names()
+            ]
+            layers_panel = self._plan3d_tools._panels.get("Layers")
+            if layers_panel is not None:
+                layers_panel.set_layers(self._plan3d_tools.layer_state)
+        except AttributeError:
+            pass
+        self.set_workspace_mode("plan3d")
+
+    def _show_plan3d_warning(self, message: str) -> None:
+        if "pywin32" in message:
+            message = (
+                "DWG support requires pywin32 in the Python environment running Compass.\n"
+                "Install it with: py -3.11 -m pip install pywin32"
+            )
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Plan3D")
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText(message)
+        dialog.setStandardButtons(QMessageBox.Ok)
+        dialog.setStyleSheet(
+            "QMessageBox { background: #181818; color: #e9e9e9; "
+            "border: 1px solid #404040; } "
+            "QLabel { color: #e9e9e9; font-size: 12px; min-width: 290px; } "
+            "QPushButton { background: #2b2b2b; color: #e9e9e9; "
+            "border: 1px solid #515151; border-radius: 6px; "
+            "padding: 6px 15px; min-width: 64px; } "
+            "QPushButton:hover { background: #3e3e3e; border-color: #ef8c31; }"
+        )
+        dialog.exec()
+
+    def open_plan3d_project(self) -> None:
+        project_file, _ = QFileDialog.getOpenFileName(
+            self, "Open Plan3D Project",
+            str(Path.home() / "Desktop" / "Plan3D"),
+            "Plan3D Project (*.p3d)",
+        )
+        if not project_file:
+            return
+        viewport = None
+        try:
+            project_path = Path(project_file)
+            data = json.loads(project_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("format") != "MAP_PLAN3D":
+                raise ValueError("This is not a Plan3D project file.")
+
+            source_data = data.get("source") or {}
+            if not isinstance(source_data, dict):
+                raise ValueError("The project source is invalid.")
+            cad_value = (source_data.get("cad")
+                         or source_data.get("managed_dwg")
+                         or source_data.get("original_path"))
+            if not cad_value:
+                raise ValueError("No CAD path was found in this project file.")
+            cad_path = Path(str(cad_value)).expanduser()
+            if not cad_path.is_absolute():
+                cad_path = project_path.parent / cad_path
+            if not cad_path.is_file():
+                raise FileNotFoundError(f"CAD file was not found: {cad_path}")
+
+            viewport = create_embedded_plan3d_viewport(self._thumbnail_frame)
+            viewport.load_file(str(cad_path))
+            if viewport.scene() is None or not viewport.scene().items():
+                raise ValueError("The CAD file contains no drawable geometry.")
+
+            saved_layers = data.get("layers") or {}
+            if not isinstance(saved_layers, dict):
+                saved_layers = {}
+            current_names = list(viewport.get_layer_names())
+            for name in current_names:
+                saved = saved_layers.get(name) or {}
+                if not isinstance(saved, dict):
+                    saved = {}
+                viewport.set_layer_type(name, saved.get("type", "Unassigned"))
+                viewport.set_layer_selected(name, bool(saved.get("visible", True)))
+
+            saved_order = data.get("layer_order") or []
+            ordered = [name for name in saved_order if name in current_names]
+            ordered.extend(name for name in current_names if name not in ordered)
+            layers = [
+                (name, viewport.get_layer_type(name),
+                 viewport.is_layer_selected(name))
+                for name in ordered
+            ]
+            view_state = data.get("viewport") or {}
+        except Exception as exc:
+            if viewport is not None:
+                viewport.deleteLater()
+            self._show_plan3d_warning(str(exc))
+            return
+
+        previous = self._active_plan3d_viewport
+        if previous is not None:
+            self._drawing_layout.removeWidget(previous)
+            previous.hide()
+            previous.deleteLater()
+        self._active_plan3d_viewport = viewport
+        self._drawing_layout.addWidget(viewport, 1)
+        self._plan3d_tools.layer_state = layers
+        if "Layers" in self._plan3d_tools._panels:
+            self._plan3d_tools._panels["Layers"].set_layers(layers)
+        self.set_workspace_mode("plan3d")
+        QTimer.singleShot(
+            0, lambda view=viewport, state=view_state:
+            self._restore_plan3d_view(view, state)
+        )
+
+    def _restore_plan3d_view(self, viewport, state) -> None:
+        if viewport is not self._active_plan3d_viewport or not isinstance(state, dict):
+            return
+        try:
+            transform = QTransform(*[
+                float(state[key]) for key in
+                ("m11", "m12", "m13", "m21", "m22", "m23",
+                 "m31", "m32", "m33")
+            ])
+            viewport.setTransform(transform)
+            viewport.centerOn(float(state["center_x"]), float(state["center_y"]))
+            viewport._user_has_interacted = True
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    def open_plan3d_tool(self, tool: str) -> None:
+        if tool in Plan3DToolStrip.ORDER:
+            self.set_workspace_mode("plan3d")
+            self._plan3d_tools.open_panel(tool)
+            self._update_plan3d_tool_visibility()
+            self._plan3d_tools.raise_()
+            self.layout().activate()
+            QTimer.singleShot(0, self._update_plan3d_tool_visibility)
+
     def activate_library(self, category: str) -> None:
+        self.set_workspace_mode("library")
         category_path = Path(category)
         key = str(category_path)
         if category_path.is_dir() and key not in ASSET_CATALOG:
@@ -1778,15 +2303,18 @@ class CenterWorkspacePanel(QFrame):
         QTimer.singleShot(0, self._thumbnail_browser.refresh_layout)
 
     def activate_project(self, project: str) -> None:
+        self.set_workspace_mode("project")
         project_path = Path(project)
         self._preview_canvas.set_asset(display_folder_name(project_path.name) if project_path.name else "Project", "Project", "READY")
         self._viewer_stack.setCurrentWidget(self._preview_canvas)
         self._current_mode = "project"
 
+    def activate_plan3d(self, tool: str) -> None:
+        self.set_workspace_mode("plan3d")
+        self.open_plan3d_tool(tool)
+
     def activate_ai(self, tool: str) -> None:
-        self._preview_canvas.set_asset(tool, "AI Tool", "READY")
-        self._viewer_stack.setCurrentWidget(self._preview_canvas)
-        self._current_mode = "ai"
+        self.set_workspace_mode("ai")
 
     def _open_asset_preview(self, name: str, asset_type: str, asset_format: str, asset_path: str = "") -> None:
         self._detail_panel.set_asset(name, asset_type, asset_format, asset_path)
@@ -1981,8 +2509,64 @@ class InspectorPanel(QFrame):
         )
 
 
+class Plan3DHistoryField(QLineEdit):
+    history_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._plan3d = False
+        self.undo_button = QToolButton(self)
+        self.redo_button = QToolButton(self)
+        for button, symbol, tip in (
+            (self.undo_button, "↶", "Undo"),
+            (self.redo_button, "↷", "Redo"),
+        ):
+            button.setText(symbol)
+            button.setToolTip(tip)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setFixedSize(34, 32)
+            button.setStyleSheet(
+                "QToolButton { color: #e0e7e9; background: #292929; "
+                "border: 1px solid #484848; border-radius: 6px; "
+                "font-family: 'Segoe UI Symbol'; font-size: 20px; font-weight: 600; } "
+                "QToolButton:hover { color: #ff922f; background: #383838; } "
+                "QToolButton:disabled { color: #818181; background: #202020; }"
+            )
+            button.hide()
+
+    def set_plan3d(self, enabled: bool) -> None:
+        self._plan3d = enabled
+        self.setReadOnly(enabled)
+        self.setClearButtonEnabled(not enabled)
+        self.setPlaceholderText("History" if enabled else "Search assets...")
+        self.setText("")
+        self.setCursor(Qt.PointingHandCursor if enabled else Qt.IBeamCursor)
+        self.setTextMargins(9, 0, 79 if enabled else 0, 0)
+        self.undo_button.setVisible(enabled)
+        self.redo_button.setVisible(enabled)
+        self._position_buttons()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_buttons()
+
+    def _position_buttons(self) -> None:
+        y = (self.height() - 32) // 2
+        self.undo_button.move(self.width() - 74, y)
+        self.redo_button.move(self.width() - 38, y)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._plan3d and event.button() == Qt.LeftButton:
+            self.history_requested.emit()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+
 class TopCommandBar(QFrame):
     """Compact production-style command bar inspired by the approved layout."""
+
+    mode_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1995,6 +2579,7 @@ class TopCommandBar(QFrame):
 
         brand = QFrame(self)
         brand.setObjectName("brandBlock")
+        brand.setFixedWidth(380)
         brand_layout = QHBoxLayout(brand)
         brand_layout.setContentsMargins(0, 4, 10, 4)
         brand_layout.setSpacing(4)
@@ -2008,30 +2593,46 @@ class TopCommandBar(QFrame):
             logo.setPixmap(logo_pixmap.scaled(42, 42, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         logo.setFixedSize(42, 42)
         brand_layout.addWidget(logo, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        manager_label = QLabel("T2 MANAGER", brand)
+        manager_label.setStyleSheet(
+            "color: #dedede; font-size: 13pt; font-weight: 600; "
+            "letter-spacing: 1px; background: transparent;"
+        )
+        brand_layout.addWidget(manager_label, 0, Qt.AlignVCenter)
+        brand_layout.addStretch(1)
         version_label = _label("v0.6.1", "brandVersion")
         version_label.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
         version_label.setFixedHeight(18)
         brand_layout.addWidget(version_label, 0, Qt.AlignLeft | Qt.AlignBottom)
         layout.addWidget(brand)
 
+        self.mode_buttons = {}
         for text, subtitle, active in (
-            ("AI", "Yapay Zeka", False),
-            ("PROJECTS", "Projeler", False),
-            ("LIBRARY", "Kütüphane", True),
+            ("LIBRARY", "Library", True),
+            ("PROJECTS", "Projects", False),
+            ("PLAN3D", "CAD to 3D", False),
+            ("AI", "Artificial Intelligence", False),
         ):
-            button = QPushButton(f"{text}\n{subtitle}", self)
+            button = QPushButton(text, self)
             button.setObjectName("topModeButton")
+            button_font = button.font()
+            button_font.setPointSize(max(10, button_font.pointSize()) + 2)
+            button.setFont(button_font)
             button.setProperty("active", active)
             button.setCheckable(True)
             button.setChecked(active)
             button.setFixedSize(118, 46)
+            button.clicked.connect(lambda _checked=False, mode=text: self.mode_requested.emit(mode))
+            self.mode_buttons[text] = button
             layout.addWidget(button)
 
         layout.addSpacing(18)
-        self.search = QLineEdit(self)
+        self.search = Plan3DHistoryField(self)
         self.search.setObjectName("globalSearch")
         self.search.setPlaceholderText("Search assets...")
         self.search.setClearButtonEnabled(True)
+        self.undo_button = self.search.undo_button
+        self.redo_button = self.search.redo_button
         self.search.setMinimumWidth(260)
         self.search.setMaximumWidth(520)
         self.search.setFixedHeight(40)
@@ -2053,6 +2654,16 @@ class TopCommandBar(QFrame):
         profile.setObjectName("profileButton")
         profile.setFixedHeight(38)
         layout.addWidget(profile)
+
+
+    def set_active_mode(self, mode: str) -> None:
+        self.search.set_plan3d(mode == "PLAN3D")
+        for name, button in self.mode_buttons.items():
+            active = name == mode
+            button.setChecked(active)
+            button.setProperty("active", active)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _open_log_file(self) -> None:
         from artmach_compass.core.app_logging import log_file_path
@@ -2081,7 +2692,57 @@ class BottomStatusBar(QFrame):
         layout.addWidget(_label("Version: 0.6.1", "statusText"))
         layout.addSpacing(18)
         layout.addWidget(_label("Last Sync: Ready", "statusText"))
+        for label in self.findChildren(QLabel):
+            label.setStyleSheet("font-size: 10pt;")
 
+
+
+class Plan3DInterfaceHistory:
+    """Time-stamped snapshots of Compass Plan3D UI state, up to 50 edits."""
+
+    def __init__(self, workspace) -> None:
+        self.workspace = workspace
+        self.states = [workspace._plan3d_snapshot()]
+        self.labels = []
+        self.index = 0
+        self.restoring = False
+        # Temporary reversible examples based on the machine's current local time.
+        for number in range(1, 51):
+            prior = self.states[-1]
+            layers = list(prior["layers"])
+            name, semantic, visible = layers[0]
+            layers[0] = (name, semantic, not visible)
+            self.states.append({"layers": tuple(layers)})
+            self.labels.append((datetime.now().astimezone(),
+                                f"Demo {number:02d}: {name} visibility"))
+        self.index = 50
+
+    def record(self, description: str) -> None:
+        if self.restoring:
+            return
+        state = self.workspace._plan3d_snapshot()
+        if state == self.states[self.index]:
+            return
+        self.states = self.states[:self.index + 1]
+        self.labels = self.labels[:self.index]
+        self.states.append(state)
+        self.labels.append((datetime.now().astimezone(), description))
+        if len(self.labels) > 50:
+            self.states.pop(0)
+            self.labels.pop(0)
+        self.index = len(self.states) - 1
+        self.workspace._update_history_buttons()
+
+    def go_to(self, index: int) -> None:
+        if not 0 <= index < len(self.states) or index == self.index:
+            return
+        self.restoring = True
+        try:
+            self.workspace._restore_plan3d_snapshot(self.states[index])
+            self.index = index
+        finally:
+            self.restoring = False
+        self.workspace._update_history_buttons()
 
 
 class CompassWorkspace(QWidget):
@@ -2128,6 +2789,15 @@ class CompassWorkspace(QWidget):
         self._layout.addWidget(self.center_panel, 1)
         self._layout.addWidget(self.right_panel, 0)
         shell.addWidget(self.body, 1)
+        self.top_bar.mode_requested.connect(self._switch_mode)
+        self.left_panel.face_changed.connect(self._activate_mode)
+        self.left_panel.plan3d_requested.connect(self._handle_plan3d_command)
+        self._history = Plan3DInterfaceHistory(self)
+        self.center_panel._plan3d_tools.layer_edited = self._apply_plan3d_layer_changes
+        self.top_bar.undo_button.clicked.connect(lambda: self._history.go_to(self._history.index - 1))
+        self.top_bar.redo_button.clicked.connect(lambda: self._history.go_to(self._history.index + 1))
+        self.top_bar.search.history_requested.connect(self._show_plan3d_history)
+        self._update_history_buttons()
 
         self.status_bar = BottomStatusBar(self)
         shell.addWidget(self.status_bar)
@@ -2136,6 +2806,119 @@ class CompassWorkspace(QWidget):
         self._standby_initialized = True
 
         self._apply_responsive_layout(1560, 1150)
+
+    def _handle_plan3d_command(self, command: str) -> None:
+        if command == "Undo":
+            self._history.go_to(self._history.index - 1)
+        elif command == "Redo":
+            self._history.go_to(self._history.index + 1)
+        elif command == "New Project":
+            self.center_panel.new_plan3d_project()
+        elif command == "Open Project":
+            self.center_panel.open_plan3d_project()
+        elif command in ("Layers", "Properties", "Export Details"):
+            self.center_panel.set_workspace_mode("plan3d")
+            self.center_panel.open_plan3d_tool(command)
+        else:
+            self.center_panel.activate_plan3d(command)
+
+    def _plan3d_snapshot(self) -> dict:
+        strip = self.center_panel._plan3d_tools
+        layer_rows = strip._panels.get("Layers")
+        layers = (tuple((row.name_label.text(), row.semantic.currentText(), row.eye.isChecked())
+                        for row in layer_rows.layer_rows)
+                  if layer_rows is not None else tuple(strip.layer_state))
+        return {"layers": layers}
+
+    def _apply_plan3d_layer_changes(self, description: str) -> None:
+        viewport = self.center_panel._active_plan3d_viewport
+        if viewport is not None:
+            for name, semantic, visible in self.center_panel._plan3d_tools.layer_state:
+                viewport.set_layer_type(name, semantic)
+                viewport.set_layer_selected(name, visible)
+        self._history.record(description)
+
+    def _restore_plan3d_snapshot(self, snapshot: dict) -> None:
+        strip = self.center_panel._plan3d_tools
+        strip.layer_state = list(snapshot["layers"])
+        if "Layers" in strip._panels:
+            strip._panels["Layers"].set_layers(list(strip.layer_state))
+
+    def _update_history_buttons(self) -> None:
+        self.top_bar.undo_button.setEnabled(self._history.index > 0)
+        self.top_bar.redo_button.setEnabled(self._history.index < len(self._history.states) - 1)
+        if self._history.index:
+            stamp, description = self._history.labels[self._history.index - 1]
+            selected = stamp.strftime("%Y-%m-%d %H:%M:%S") + "  " + description
+        else:
+            selected = "Initial state"
+        if self.top_bar.search._plan3d:
+            self.top_bar.search.setText(selected)
+
+    def _show_plan3d_history(self) -> None:
+        menu = QMenu(self.top_bar.search)
+        menu.setStyleSheet("QMenu { background: #1b1b1b; color: #eeeeee; "
+                           "border: 1px solid #383838; } "
+                           "QMenu::item:selected { background: #383838; }")
+        listing = QListWidget(menu)
+        listing.setFixedSize(max(390, self.top_bar.search.width()), 340)
+        listing.setStyleSheet(
+            "QListWidget { background: #1b1b1b; color: #e5e9eb; border: 0; "
+            "font-family: Consolas; font-size: 12px; } "
+            "QListWidget::item { height: 27px; padding-left: 7px; } "
+            "QListWidget::item:hover { background: #383838; } "
+            "QListWidget::item:selected { background: #454545; color: #ffffff; }"
+        )
+        listing.setVerticalScrollBar(ReactiveScrollBar(
+            Qt.Vertical, listing, hide_handle_when_idle=True, gradient_track=True
+        ))
+        for index in range(len(self._history.labels) - 1, -1, -1):
+            timestamp, description = self._history.labels[index]
+            item = QListWidgetItem(
+                f"#{index + 1:02d}  "
+                + timestamp.strftime("%Y-%m-%d %H:%M:%S") + "  " + description
+            )
+            if self._history.index == index + 1:
+                item.setBackground(QColor("#454545"))
+            item.setData(Qt.UserRole, index + 1)
+            listing.addItem(item)
+        initial = QListWidgetItem("Initial state")
+        initial.setData(Qt.UserRole, 0)
+        listing.addItem(initial)
+        listing.itemClicked.connect(lambda item: (
+            self._history.go_to(item.data(Qt.UserRole)), menu.close()
+        ))
+        widget_action = QWidgetAction(menu)
+        widget_action.setDefaultWidget(listing)
+        menu.addAction(widget_action)
+        menu.setMinimumWidth(listing.width())
+        menu.exec(self.top_bar.search.mapToGlobal(
+            self.top_bar.search.rect().bottomLeft()
+        ))
+
+    def _switch_mode(self, mode: str) -> None:
+        target = {
+            "LIBRARY": "library",
+            "PROJECTS": "project",
+            "AI": "ai",
+            "PLAN3D": "plan3d",
+        }.get(mode)
+        if target is not None:
+            if target == self.left_panel._current_mode and self.left_panel._pending_mode is None:
+                self.top_bar.set_active_mode(mode)
+            else:
+                self.left_panel.select_mode(target)
+
+    def _activate_mode(self, mode: str) -> None:
+        self.center_panel.set_workspace_mode(mode)
+        self.top_bar.set_active_mode({
+            "library": "LIBRARY",
+            "project": "PROJECTS",
+            "ai": "AI",
+            "plan3d": "PLAN3D",
+        }[mode])
+        if mode == "plan3d":
+            self._update_history_buttons()
 
     def set_standby_mode(self, active: bool, *, animated: bool = True) -> None:
         self._standby_active = False
@@ -2201,3 +2984,10 @@ class CompassWorkspace(QWidget):
         self.right_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.center_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+
+
+# /* PLAN3D_NEUTRAL_GRAY */
+
+# PLAN3D_BLUE_TABS_COMBO_FIX
+
+# PLAN3D_TOOLS_REVEAL_STATUS

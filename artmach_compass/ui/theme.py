@@ -91,17 +91,17 @@ QFrame#navigationMarker {
     border-radius: 2px;
 }
 QFrame#navigationMarker[active="true"] {
-    background: #47a6ff;
+    background: #989898;
 }
 QFrame#navigationMarker[hovered="true"] {
     background: #ff8422;
 }
 QLabel#navigationTitle {
-    color: #718aa4;
+    color: #878787;
     font-size: 11px;
 }
 QLabel#navigationTitle[active="true"] {
-    color: #58adff;
+    color: #a1a1a1;
 }
 QLabel#navigationTitle[hovered="true"] {
     color: #ff8422;
@@ -223,7 +223,7 @@ QScrollBar::groove:horizontal {
 }
 QScrollBar::handle:vertical,
 QScrollBar::handle:horizontal {
-    background: rgba(172, 76, 12, 190);
+    background: rgba(92, 92, 92, 190);
     border: none;
     border-radius: 2px;
 }
@@ -253,18 +253,18 @@ QScrollBar::sub-page:horizontal {
 APP_STYLESHEET += r"""
 QFrame#topCommandBar {
     background: rgba(6, 10, 13, 246);
-    border-bottom: 1px solid #20272d;
+    border-bottom: 1px solid #262626;
 }
 QFrame#workspaceBody {
     background: rgba(3, 6, 8, 232);
 }
 QFrame#bottomStatusBar {
-    background: rgba(8, 13, 16, 250);
-    border-top: 1px solid #242b30;
+    background: rgba(12, 12, 12, 250);
+    border-top: 1px solid #2a2a2a;
 }
 QFrame#brandBlock {
     background: transparent;
-    border-right: 1px solid #242b30;
+    border-right: 1px solid #2a2a2a;
 }
 QLabel#brandMark {
     color: #ff8a00;
@@ -277,7 +277,7 @@ QLabel#brandTitle {
     font-weight: 800;
 }
 QLabel#brandSubtitle {
-    color: #9a9fa3;
+    color: #9e9e9e;
     font-size: 8px;
     font-weight: 700;
     letter-spacing: 1px;
@@ -285,7 +285,7 @@ QLabel#brandSubtitle {
 QPushButton#topModeButton {
     background: rgba(255, 255, 255, 2);
     border: 0;
-    border-right: 1px solid #20272d;
+    border-right: 1px solid #262626;
     border-radius: 5px;
     color: #d7d9db;
     padding: 5px 12px;
@@ -294,20 +294,20 @@ QPushButton#topModeButton {
 }
 QPushButton#topModeButton:hover {
     background: rgba(255, 255, 255, 7);
-    border-color: #30383e;
+    border-color: #373737;
 }
 QPushButton#topModeButton[active="true"] {
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 rgba(22,28,32,235), stop:1 rgba(11,15,18,245));
-    border-bottom: 2px solid #47a6ff;
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 rgba(27, 27, 27, 235), stop:1 rgba(11,15,18,245));
+    border-bottom: 2px solid #989898;
     color: #ffffff;
 }
 QLineEdit#globalSearch {
-    background: #11171b;
-    border: 1px solid #384149;
+    background: #161616;
+    border: 1px solid #404040;
     border-radius: 7px;
     color: #e2e4e5;
     padding: 0 14px;
-    selection-background-color: #9b5700;
+    selection-background-color: #5f5f5f;
 }
 QLineEdit#globalSearch:focus {
     border-color: #d87700;
@@ -316,7 +316,7 @@ QToolButton#commandButton,
 QPushButton#profileButton {
     background: transparent;
     border: 0;
-    border-left: 1px solid #20272d;
+    border-left: 1px solid #262626;
     border-radius: 0;
     color: #d9dcde;
     padding: 6px 12px;
@@ -331,22 +331,22 @@ QPushButton#profileButton:hover {
     color: #ffffff;
 }
 QLabel#statusOk {
-    color: #aeb7bd;
+    color: #b6b6b6;
     font-size: 9px;
 }
 QLabel#statusText {
-    color: #80898f;
+    color: #888888;
     font-size: 9px;
 }
 QFrame#leftFlipPanel,
 QFrame#animatedCenterPanel,
 QFrame#rightInspectorPanel {
-    background: rgba(10, 15, 18, 218);
-    border: 1px solid #252d32;
+    background: rgba(14, 14, 14, 218);
+    border: 1px solid #2c2c2c;
     border-radius: 7px;
 }
 QFrame#animatedCenterPanel {
-    background: rgba(8, 13, 16, 225);
+    background: rgba(12, 12, 12, 225);
 }
 QFrame#navigationRow {
     background: rgba(255, 255, 255, 4);
@@ -363,46 +363,46 @@ QFrame#navigationRow[active="true"] {
     border: 0;
 }
 QFrame#navigationMarker[active="true"] {
-    background: #47a6ff;
+    background: #989898;
 }
 QLabel#navigationTitle {
-    color: #c1c7cb;
+    color: #c6c6c6;
     font-size: 12px;
 }
 QLabel#navigationTitle[active="true"] {
-    color: #58adff;
+    color: #a1a1a1;
 }
 QFrame#assetThumbnailCard {
-    background: rgba(15, 21, 25, 230);
-    border: 1px solid #283138;
+    background: rgba(20, 20, 20, 230);
+    border: 1px solid #303030;
     border-radius: 6px;
 }
 QFrame#assetThumbnailCard:hover {
-    background: rgba(21, 28, 33, 240);
-    border-color: #59636b;
+    background: rgba(27, 27, 27, 240);
+    border-color: #616161;
 }
 QFrame#assetThumbnailCard[selected="true"] {
-    background: rgba(21, 27, 30, 250);
-    border-color: #47a6ff;
+    background: rgba(26, 26, 26, 250);
+    border-color: #989898;
 }
 QFrame#inspectorField,
 QFrame#activityCard {
-    background: rgba(15, 21, 25, 220);
-    border: 1px solid #283138;
+    background: rgba(20, 20, 20, 220);
+    border: 1px solid #303030;
     border-radius: 5px;
 }
 
 /* 0.5.4 fixed center panel composition */
 QFrame#centerSubPanel, QFrame#assetPreviewDetailPanel {
-    background: rgba(12, 17, 20, 235);
-    border: 1px solid rgba(77, 96, 106, 150);
+    background: rgba(16, 16, 16, 235);
+    border: 1px solid rgba(93, 93, 93, 150);
     border-radius: 8px;
 }
 QLabel#assetDetailPreview {
     background: rgba(7, 11, 14, 230);
-    border: 1px solid rgba(62, 76, 84, 130);
+    border: 1px solid rgba(74, 74, 74, 130);
     border-radius: 6px;
-    color: rgba(150, 168, 180, 180);
+    color: rgba(165, 165, 165, 180);
 }
 QFrame#assetDetailFields {
     background: transparent;
@@ -430,14 +430,14 @@ QPushButton#generatePreviewButton {
     min-height: 34px;
     border: 1px solid rgba(218, 133, 53, 165);
     border-radius: 4px;
-    background: rgba(40, 31, 24, 205);
+    background: rgba(32, 32, 32, 205);
     color: rgba(239, 170, 92, 235);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1px;
 }
 QPushButton#generatePreviewButton:hover {
-    background: rgba(57, 39, 25, 225);
+    background: rgba(42, 42, 42, 225);
     border-color: rgba(239, 160, 75, 220);
 }
 QPushButton#generatePreviewButton:disabled {
@@ -446,7 +446,7 @@ QPushButton#generatePreviewButton:disabled {
     background: rgba(30, 30, 30, 120);
 }
 QLabel#previewGenerationStatus {
-    color: rgba(160, 175, 192, 210);
+    color: rgba(173, 173, 173, 210);
     font-size: 9px;
 }
 QProgressBar#previewGenerationProgress {
@@ -457,4 +457,13 @@ QProgressBar#previewGenerationProgress::chunk {
     background: rgba(224, 139, 55, 220);
 }
 
+"""
+
+# PLAN3D_NEUTRAL_GRAY
+
+# PLAN3D_BLUE_TABS_COMBO_FIX
+APP_STYLESHEET += r"""
+QPushButton#topModeButton[active="true"] {
+    border-bottom: 2px solid #47a6ff;
+}
 """

@@ -52,18 +52,5 @@ def prepare_max_transfer(export_panel):
     plan/facade assignments and pivots. This function does not execute Max.
     """
     _activate_engine()
-    assignments = getattr(export_panel, "_assignments", {})
-    facades = assignments.get("facades", {})
-    settings = getattr(export_panel, "_floor_settings", {})
-    if not facades or not settings:
-        raise ValueError("Assign facades and floor plans before Max transfer")
-    page = export_panel.parentWidget()
-    viewport = getattr(page, "viewport", None)
-    if viewport is None:
-        raise ValueError("Drawing viewport is unavailable")
-    analysis = analyze_facade_windows(viewport, facades, settings)
-    if not isinstance(getattr(export_panel, "_analysis_results", None), dict):
-        export_panel._analysis_results = {}
-    export_panel._analysis_results["facade_windows_all_floors"] = analysis
     bridge = importlib.import_module("plan3d_max_bridge")
     return bridge.prepare_wall_only_transfer(export_panel)
