@@ -2142,6 +2142,10 @@ class ProjectDetailsPanel(Plan3DToolPanel):
         if viewport is self._viewport:
             return
         if self._viewport is not None:
+            if self._pending_selection is not None:
+                self._viewport.cancel_assignment_selection()
+                self._pending_selection = None
+            self._viewport.cancel_floor_pivot_selection()
             try:
                 self._viewport.assignmentRegionSelected.disconnect(self._selection_finished)
                 self._viewport.floorPivotCommitted.disconnect(self._pivot_finished)
