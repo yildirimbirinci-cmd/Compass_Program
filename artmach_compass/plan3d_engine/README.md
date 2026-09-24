@@ -2,6 +2,8 @@
 
 Source: yildirimbirinci-cmd/Plan3D, main tree 1283b45e5fb5c7631247a2962424f0ad8ecf950a.
 
-Compass imports the engine through `artmach_compass.plan3d_backend` when a Plan3D operation is requested. No Plan3D buttons are added to Compass. `analyze_facade_windows` computes per-facade heights for confirmed floors; ambiguous floor assignments and missing measurement lines raise errors. `configure_exterior_door_layers` chooses a project-specific door layer; the upstream layer remains the default for older projects.
+`artmach_compass.plan3d_backend` imports the engine lazily; no Plan3D buttons are placed into Compass. `analyze_facade_windows` measures all confirmed floors from the lowest `C Ölçü` line inside each selected facade. `prepare_max_transfer` prepares a MaxScript using per-floor physical windows, facade measurements and existing wall/floor/door exports. It never executes 3ds Max itself.
 
-The original MaxScript transfer path is preserved as `prepare_max_transfer`. The current upstream window MaxScript exporter handles Ground Floor only; upper-floor window geometry/export, on Windows with AutoCAD and 3ds Max, still needs integration and end-to-end validation before enabling a transfer button. Keep the existing UI unchanged until panel placement is decided.
+A missing datum, unmatched floor/window, or incomplete assignment raises an error instead of producing a partial transfer. Existing exterior-door layer remains the default; `configure_exterior_door_layers` accepts a different project-specific source. The source engine's standalone UI modules are bundled to preserve internal dependencies but are not instantiated or displayed by the Compass adapter.
+
+A live end-to-end Windows/AutoCAD/3ds Max check against Ground/First/Second Floor drawings is still required before adding a transfer button. The Compass interface remains untouched while panel placement is undecided.

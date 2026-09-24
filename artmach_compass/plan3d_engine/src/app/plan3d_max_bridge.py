@@ -5040,7 +5040,11 @@ def prepare_wall_only_transfer(panel):
         raise RuntimeError("Ground window export: previous export result invalid.")
 
     wall_floors = list(result.get("floors", []) or [])
-    window_floors = _collect_ground_windows(panel, wall_floors)
+    if getattr(panel, "_analysis_results", {}).get("facade_windows_all_floors"):
+        from artmach_compass.plan3d_engine.max_windows import collect_all_floor_windows
+        window_floors = collect_all_floor_windows(panel, wall_floors)
+    else:
+        window_floors = _collect_ground_windows(panel, wall_floors)
 
     pending_value = result.get("pending_script") or result.get("pending_path")
     pending = (
@@ -5062,7 +5066,7 @@ def prepare_wall_only_transfer(panel):
         int(row.get("window_count", 0) or 0)
         for row in window_floors
     )
-    result["window_export_engine"] = "GROUND_WINDOW_EXPORT"
+    result["window_export_engine"] = ("ALL_FLOOR_WINDOW_EXPORT" if getattr(panel, "_analysis_results", {}).get("facade_windows_all_floors") else "GROUND_WINDOW_EXPORT")
 
     print(
         "PLAN3D GROUND WINDOW EXPORT PREPARED |",
