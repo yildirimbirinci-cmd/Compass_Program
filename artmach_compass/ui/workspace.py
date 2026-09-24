@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import json
 import sys
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -52,6 +53,7 @@ from PySide6.QtGui import (
     QPixmapCache,
     QRadialGradient,
     QDesktopServices,
+    QDoubleValidator,
 )
 from PySide6.QtWidgets import (
     QBoxLayout,
@@ -444,7 +446,7 @@ class Plan3DMenuFace(QFrame):
         ("File", ("New Project", "Open Project", "Save Project",
                   "Save As Project", "Close Project")),
         ("Edit", ("Undo", "Redo")),
-        ("Tools", ("Layers", "Properties", "Export Details")),
+        ("Tools", ("Layers", "Properties", "Project Details")),
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -1985,12 +1987,351 @@ class Plan3DToolPanel(QFrame):
 
 
 
+class ProjectDetailsPanel(Plan3DToolPanel):
+    """Viewport assignments and per-floor dimensions used by the Plan3D engine."""
+
+    FACADES = ("Front", "Rear", "Right", "Left")
+    FLOOR_NAMES = (
+        "Basement 3", "Basement 2", "Basement 1", "Ground Floor",
+        "First Floor", "Second Floor", "Third Floor", "Fourth Floor",
+        "Fifth Floor", "Sixth Floor", "Seventh Floor", "Eighth Floor",
+        "Ninth Floor", "Tenth Floor", "Roof Floor",
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("Project Details", parent)
+        self._clear_body()
+        self._viewport = None
+        self._assignments = {"facades": {}, "floor_plans": {}}
+        self._floor_settings = {}
+        self._floor_pivots = {}
+        self._analysis_results = {}
+        self._active_floor_name = "Ground Floor"
+        self._pending_selection = None
+        self._confirmed = False
+        self._restoring = False
+
+        title = QLabel("VIEWPORT SELECTION", self.body)
+        title.setObjectName("plan3dPanelTitle")
+        self.body_layout.addWidget(title)
+
+        tabs = QWidget(self.body)
+        tabs_layout = QHBoxLayout(tabs)
+        tabs_layout.setContentsMargins(0, 0, 0, 0)
+        tabs_layout.setSpacing(5)
+        self.facade_tab = QPushButton("Facade", tabs)
+        self.floor_tab = QPushButton("Floor Plan", tabs)
+        for tab in (self.facade_tab, self.floor_tab):
+            tab.setObjectName("projectDetailsTab")
+            tab.setCheckable(True)
+            tabs_layout.addWidget(tab, 1)
+        self.facade_tab.clicked.connect(lambda: self._show_section("facade"))
+        self.floor_tab.clicked.connect(lambda: self._show_section("floor"))
+        self.body_layout.addWidget(tabs)
+
+        self.facade_group = QWidget(self.body)
+        facade_layout = QVBoxLayout(self.facade_group)
+        facade_layout.setContentsMargins(0, 5, 0, 0)
+        facade_layout.setSpacing(6)
+        facade_row = QWidget(self.facade_group)
+        facade_row_layout = QHBoxLayout(facade_row)
+        facade_row_layout.setContentsMargins(0, 0, 0, 0)
+        facade_row_layout.setSpacing(5)
+        self.select_facade = QPushButton("Select in Viewport", facade_row)
+        self.facade_name = QComboBox(facade_row)
+        self.facade_name.addItems(self.FACADES)
+        facade_row_layout.addWidget(self.select_facade, 2)
+        facade_row_layout.addWidget(self.facade_name, 1)
+        facade_layout.addWidget(facade_row)
+        self.facade_analysis = QPushButton("Facade Analysis", self.facade_group)
+        self.floor_areas = QPushButton("Show Floor Areas", self.facade_group)
+        self.add_pivot = QPushButton("Add Pivot", self.facade_group)
+        for button in (self.facade_analysis, self.floor_areas, self.add_pivot):
+            facade_layout.addWidget(button)
+        self.body_layout.addWidget(self.facade_group)
+
+        self.floor_group = QWidget(self.body)
+        floor_layout = QVBoxLayout(self.floor_group)
+        floor_layout.setContentsMargins(0, 5, 0, 0)
+        floor_layout.setSpacing(6)
+        floor_row = QWidget(self.floor_group)
+        floor_row_layout = QHBoxLayout(floor_row)
+        floor_row_layout.setContentsMargins(0, 0, 0, 0)
+        floor_row_layout.setSpacing(5)
+        self.select_floor = QPushButton("Select Floor", floor_row)
+        self.floor_name = QComboBox(floor_row)
+        self.floor_name.setEditable(True)
+        self.floor_name.addItems(self.FLOOR_NAMES)
+        self.floor_name.setCurrentText("Ground Floor")
+        floor_row_layout.addWidget(self.select_floor, 2)
+        floor_row_layout.addWidget(self.floor_name, 1)
+        floor_layout.addWidget(floor_row)
+        self.dimensions = {}
+        for label, key in (("Floor Elevation", "floor_elevation_cm"),
+                           ("Wall Height", "wall_height_cm"),
+                           ("Interior Door Height", "door_height_cm")):
+            field_label = QLabel(label + " (cm)", self.floor_group)
+            field_label.setObjectName("plan3dFieldName")
+            entry = QLineEdit(self.floor_group)
+            entry.setObjectName("projectDetailsMeasure")
+            entry.setPlaceholderText("Enter cm")
+            entry.setValidator(QDoubleValidator(-100000.0, 100000.0, 2, entry))
+            entry.textChanged.connect(self._dimensions_changed)
+            floor_layout.addWidget(field_label)
+            floor_layout.addWidget(entry)
+            self.dimensions[key] = entry
+        self.body_layout.addWidget(self.floor_group)
+
+        self.selection_status = QLabel("Select facade and floor plan areas in Drawing Area.", self.body)
+        self.selection_status.setObjectName("plan3dFieldName")
+        self.selection_status.setWordWrap(True)
+        self.body_layout.addWidget(self.selection_status)
+        self.body_layout.addStretch(1)
+
+        footer = QWidget(self)
+        footer.setObjectName("projectDetailsFooter")
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(8, 8, 8, 8)
+        footer_layout.setSpacing(6)
+        divider = QFrame(footer)
+        divider.setFrameShape(QFrame.HLine)
+        divider.setObjectName("projectDetailsDivider")
+        footer_layout.addWidget(divider)
+        self.confirm_button = QPushButton("Details Confirmed", footer)
+        self.create_button = QPushButton("Create 3D Model", footer)
+        footer_layout.addWidget(self.confirm_button)
+        footer_layout.addWidget(self.create_button)
+        self.layout().addWidget(footer)
+
+        self.setStyleSheet(self.styleSheet() + """
+            QPushButton#projectDetailsTab, QWidget#projectDetailsFooter QPushButton,
+            QWidget#plan3dToolPanel QPushButton {
+                background: #252525; border: 1px solid #464646;
+                border-radius: 6px; color: #ececec; padding: 5px;
+            }
+            QPushButton#projectDetailsTab:hover, QWidget#plan3dToolPanel QPushButton:hover {
+                border-color: #f39743; background: #333333;
+            }
+            QPushButton#projectDetailsTab:checked { background: #424242; border-color: #777777; }
+            QPushButton:disabled { color: #777777; background: #202020; border-color: #333333; }
+            QLineEdit#projectDetailsMeasure, QWidget#plan3dToolPanel QComboBox {
+                background: #202020; color: #eeeeee; border: 1px solid #484848;
+                border-radius: 5px; padding: 4px;
+            }
+            QFrame#projectDetailsDivider { color: #555555; background: #555555; max-height: 1px; }
+        """)
+        self.select_facade.clicked.connect(lambda: self._start_selection("facades"))
+        self.select_floor.clicked.connect(lambda: self._start_selection("floor_plans"))
+        self.facade_analysis.clicked.connect(self.run_facade_analysis)
+        self.floor_areas.clicked.connect(self.show_floor_areas)
+        self.add_pivot.clicked.connect(self.add_floor_pivot)
+        self.floor_name.currentTextChanged.connect(self._floor_changed)
+        self.confirm_button.clicked.connect(self.confirm_details)
+        self.create_button.clicked.connect(self.create_model)
+        self._show_section("facade")
+        self._update_buttons()
+
+    def _show_section(self, section: str) -> None:
+        facade = section == "facade"
+        self.facade_tab.setChecked(facade)
+        self.floor_tab.setChecked(not facade)
+        self.facade_group.setVisible(facade)
+        self.floor_group.setVisible(not facade)
+
+    def attach_viewport(self, viewport) -> None:
+        if viewport is self._viewport:
+            return
+        if self._viewport is not None:
+            try:
+                self._viewport.assignmentRegionSelected.disconnect(self._selection_finished)
+                self._viewport.floorPivotCommitted.disconnect(self._pivot_finished)
+            except (RuntimeError, TypeError):
+                pass
+        self._viewport = viewport
+        if viewport is not None:
+            viewport.assignmentRegionSelected.connect(self._selection_finished)
+            viewport.floorPivotCommitted.connect(self._pivot_finished)
+            viewport.set_floor_pivot_records(self._floor_pivots)
+            viewport.show_assignment_regions(self._assignments)
+        self._update_buttons()
+
+    def _start_selection(self, kind: str) -> None:
+        if self._viewport is None:
+            self.selection_status.setText("Open a drawing before selecting an area.")
+            return
+        name = self.facade_name.currentText() if kind == "facades" else self.floor_name.currentText().strip()
+        if not name:
+            self.selection_status.setText("Choose a facade or enter a floor name.")
+            return
+        self._pending_selection = (kind, name)
+        self._viewport.begin_assignment_selection(kind, name)
+        self.selection_status.setText("Drag a rectangle around " + name + " in Drawing Area.")
+
+    def _selection_finished(self, kind, name, rect) -> None:
+        pending = self._pending_selection
+        if not pending or kind != pending[0] or len(rect) != 4:
+            return
+        group, selected_name = pending
+        self._pending_selection = None
+        self._assignments[group][selected_name] = list(rect)
+        self._confirmed = False
+        self._analysis_results.clear()
+        self._viewport.show_assignment_regions(self._assignments)
+        self.selection_status.setText(selected_name + " selected.")
+        self._update_buttons()
+
+    def _floor_changed(self, name: str) -> None:
+        if self._restoring:
+            return
+        self._active_floor_name = name.strip()
+        settings = self._floor_settings.get(self._active_floor_name, {})
+        self._restoring = True
+        for key, widget in self.dimensions.items():
+            value = settings.get(key)
+            widget.setText("" if value is None else str(value))
+        self._restoring = False
+        self._update_buttons()
+
+    def _dimensions_changed(self, *_args) -> None:
+        if self._restoring:
+            return
+        name = self.floor_name.currentText().strip()
+        if not name:
+            return
+        values = {}
+        for key, widget in self.dimensions.items():
+            try:
+                values[key] = float(widget.text())
+            except ValueError:
+                break
+        if len(values) == len(self.dimensions) and all(math.isfinite(v) for v in values.values()):
+            self._floor_settings[name] = values
+        else:
+            self._floor_settings.pop(name, None)
+        self._confirmed = False
+        self._analysis_results.clear()
+        self._update_buttons()
+
+    def add_floor_pivot(self) -> None:
+        name = self.floor_name.currentText().strip()
+        rect = self._assignments["floor_plans"].get(name)
+        if self._viewport is None or rect is None:
+            self.selection_status.setText("Select a floor plan area before adding its pivot.")
+            return
+        self._viewport.begin_floor_pivot_selection(name, rect, self._floor_pivots.get(name))
+        self.selection_status.setText("Choose the pivot point for " + name + " in Drawing Area.")
+
+    def _pivot_finished(self, floor_name, x, y, snap_kind) -> None:
+        if floor_name not in self._assignments["floor_plans"]:
+            return
+        self._floor_pivots[floor_name] = {
+            "floor_name": floor_name, "pivot_x": float(x), "pivot_y": float(y),
+            "snap_kind": str(snap_kind), "master": floor_name == "Ground Floor",
+        }
+        self._viewport.set_floor_pivot_records(self._floor_pivots)
+        self._confirmed = False
+        self._update_buttons()
+        self.selection_status.setText(floor_name + " pivot set.")
+
+    def _ready(self) -> bool:
+        floors = self._assignments["floor_plans"]
+        return bool(
+            self._viewport is not None
+            and all(name in self._assignments["facades"] for name in self.FACADES)
+            and floors
+            and all(name in self._floor_pivots and name in self._floor_settings
+                    and self._floor_settings[name].get("floor_elevation_cm") is not None
+                    and self._floor_settings[name].get("wall_height_cm", 0) > 0
+                    and self._floor_settings[name].get("door_height_cm", 0) > 0
+                    for name in floors)
+        )
+
+    def _update_buttons(self) -> None:
+        floor = self.floor_name.currentText().strip()
+        self.add_pivot.setEnabled(self._viewport is not None and floor in self._assignments["floor_plans"])
+        self.confirm_button.setEnabled(self._ready() and not self._confirmed)
+        self.create_button.setEnabled(self._ready() and self._confirmed)
+
+    def run_facade_analysis(self) -> None:
+        try:
+            from artmach_compass.plan3d_backend import analyze_facade_windows
+            if self._viewport is None or not self._assignments["facades"]:
+                raise ValueError("Select facade areas first.")
+            if not self._floor_settings:
+                raise ValueError("Enter the dimensions for the selected floors first.")
+            analysis = analyze_facade_windows(
+                self._viewport, self._assignments["facades"], self._floor_settings,
+            )
+            self._analysis_results["facade_windows_all_floors"] = analysis
+            self._viewport.show_facade_height_reference_lines(
+                [entry["datum_line"] for entry in analysis.values()]
+            )
+            count = sum(len(entry["windows"]) for entry in analysis.values())
+            self.selection_status.setText(f"Facade Analysis: {count} windows measured.")
+        except Exception as exc:
+            self.selection_status.setText(str(exc))
+
+    def show_floor_areas(self) -> None:
+        try:
+            from artmach_compass.plan3d_backend import analyze_floor_areas
+            report = analyze_floor_areas(self)
+            count = len(report.get("floors", {}))
+            self.selection_status.setText(f"Show Floor Areas: {count} floors processed.")
+        except Exception as exc:
+            self.selection_status.setText(str(exc))
+
+    def confirm_details(self) -> None:
+        if not self._ready():
+            return
+        self._confirmed = True
+        self._update_buttons()
+        self.selection_status.setText("Project details confirmed.")
+
+    def create_model(self) -> None:
+        if not self._confirmed or not self._ready():
+            return
+        try:
+            from artmach_compass.plan3d_backend import prepare_max_transfer
+            result = prepare_max_transfer(self)
+            pending = result.get("pending_script") or result.get("pending_path")
+            self.selection_status.setText("3D model prepared for 3ds Max: " + str(pending))
+        except Exception as exc:
+            self.selection_status.setText(str(exc))
+
+    def values(self) -> dict:
+        return {
+            "floor_name": self.floor_name.currentText().strip(),
+            "floor_settings": deepcopy(self._floor_settings),
+            "assignments": deepcopy(self._assignments),
+            "analysis": deepcopy(self._analysis_results),
+            "confirmed": self._confirmed,
+            "pivots": {"version": 2, "coordinate_space": "cad_source_xy",
+                       "records": deepcopy(self._floor_pivots)},
+        }
+
+    def load_data(self, data: dict) -> None:
+        self._assignments = deepcopy(data.get("assignments", {"facades": {}, "floor_plans": {}}))
+        self._assignments.setdefault("facades", {})
+        self._assignments.setdefault("floor_plans", {})
+        self._floor_settings = deepcopy(data.get("floor_settings", {}))
+        self._floor_pivots = deepcopy(data.get("pivots", {}).get("records", {}))
+        self._analysis_results = deepcopy(data.get("analysis", {}))
+        self._confirmed = bool(data.get("confirmed", False))
+        floor = str(data.get("floor_name") or "Ground Floor")
+        self.floor_name.setCurrentText(floor)
+        self._floor_changed(floor)
+        if self._viewport is not None:
+            self._viewport.set_floor_pivot_records(self._floor_pivots)
+            self._viewport.show_assignment_regions(self._assignments)
+        self._update_buttons()
+
+
 class Plan3DToolStrip(QFrame):
     """Open panels stay in canonical order and share available width."""
 
     panels_changed = Signal(bool)
 
-    ORDER = ("Layers", "Properties", "Export Details")
+    ORDER = ("Layers", "Properties", "Project Details")
     # Temporary UI examples. Replace with actual DWG layer data when connected.
     DEMO_LAYERS = (
         ("KP Duvarlar", "Wall", True),
@@ -2025,6 +2366,8 @@ class Plan3DToolStrip(QFrame):
         self._panels: dict[str, Plan3DToolPanel] = {}
         self.layer_state = list(self.DEMO_LAYERS)
         self.layer_edited = None
+        self.project_details_state = {}
+        self.viewport = None
 
     def open_panel(self, title: str) -> None:
         if title not in self.ORDER:
@@ -2035,9 +2378,13 @@ class Plan3DToolStrip(QFrame):
             self.updateGeometry()
             self.panels_changed.emit(True)
             return
-        panel = Plan3DToolPanel(title, self)
+        panel = ProjectDetailsPanel(self) if title == "Project Details" else Plan3DToolPanel(title, self)
         if title == "Layers":
             panel.set_layers(list(self.layer_state))
+        elif title == "Project Details":
+            panel.attach_viewport(self.viewport)
+            if self.project_details_state:
+                panel.load_data(self.project_details_state)
         panel.closed.connect(self.close_panel)
         self._panels[title] = panel
         index = sum(name in self._panels for name in self.ORDER[:self.ORDER.index(title)])
@@ -2052,6 +2399,9 @@ class Plan3DToolStrip(QFrame):
             if title == "Layers":
                 self.layer_state = [(row.name_label.text(), row.semantic.currentText(),
                                      row.eye.isChecked()) for row in panel.layer_rows]
+            elif title == "Project Details":
+                self.project_details_state = panel.values()
+                panel.attach_viewport(None)
             self._layout.removeWidget(panel)
             panel.hide()
             panel.deleteLater()
@@ -2221,6 +2571,12 @@ class CenterWorkspacePanel(QFrame):
             previous.hide()
         self._active_plan3d_viewport = viewport
         self._drawing_layout.addWidget(viewport, 1)
+        self._plan3d_tools.viewport = viewport
+        self._plan3d_tools.project_details_state = {}
+        details = self._plan3d_tools._panels.get("Project Details")
+        if details is not None:
+            details.load_data({})
+            details.attach_viewport(viewport)
         try:
             self._plan3d_tools.layer_state = [
                 (name, viewport.get_layer_type(name), viewport.is_layer_selected(name))
@@ -2322,6 +2678,12 @@ class CenterWorkspacePanel(QFrame):
             previous.deleteLater()
         self._active_plan3d_viewport = viewport
         self._drawing_layout.addWidget(viewport, 1)
+        self._plan3d_tools.viewport = viewport
+        self._plan3d_tools.project_details_state = data.get("export_details") or {}
+        details = self._plan3d_tools._panels.get("Project Details")
+        if details is not None:
+            details.attach_viewport(viewport)
+            details.load_data(self._plan3d_tools.project_details_state)
         self._plan3d_tools.layer_state = layers
         if "Layers" in self._plan3d_tools._panels:
             self._plan3d_tools._panels["Layers"].set_layers(layers)
@@ -2358,11 +2720,6 @@ class CenterWorkspacePanel(QFrame):
                     ("Drawing", drawing.name if drawing and drawing.name else "No drawing open"),
                     ("Layers", str(len(viewport.get_layer_names())) if viewport is not None else "0"),
                     ("Format", drawing.suffix.upper().lstrip(".") if drawing and drawing.suffix else "—"),
-                ])
-            elif panel is not None and tool == "Export Details":
-                panel.set_fields([
-                    ("Drawing", "Loaded" if self._active_plan3d_viewport is not None else "No drawing open"),
-                    ("Export", "Awaiting project assignments"),
                 ])
             self._update_plan3d_tool_visibility()
             self._plan3d_tools.raise_()
@@ -2894,7 +3251,7 @@ class CompassWorkspace(QWidget):
             self.center_panel.new_plan3d_project()
         elif command == "Open Project":
             self.center_panel.open_plan3d_project()
-        elif command in ("Layers", "Properties", "Export Details"):
+        elif command in ("Layers", "Properties", "Project Details"):
             self.center_panel.set_workspace_mode("plan3d")
             self.center_panel.open_plan3d_tool(command)
         else:
