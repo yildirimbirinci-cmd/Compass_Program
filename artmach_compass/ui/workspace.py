@@ -2190,7 +2190,10 @@ class CompassWorkspace(QWidget):
             "PLAN3D": "plan3d",
         }.get(mode)
         if target is not None:
-            self.left_panel.select_mode(target)
+            if target == self.left_panel._current_mode and self.left_panel._pending_mode is None:
+                self.top_bar.set_active_mode(mode)
+            else:
+                self.left_panel.select_mode(target)
 
     def _activate_mode(self, mode: str) -> None:
         if mode == "plan3d":
