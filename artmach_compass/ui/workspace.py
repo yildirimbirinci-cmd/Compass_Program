@@ -2015,23 +2015,15 @@ class ProjectDetailsPanel(Plan3DToolPanel):
         title.setObjectName("plan3dPanelTitle")
         self.body_layout.addWidget(title)
 
-        tabs = QWidget(self.body)
-        tabs_layout = QHBoxLayout(tabs)
-        tabs_layout.setContentsMargins(0, 0, 0, 0)
-        tabs_layout.setSpacing(5)
-        self.facade_tab = QPushButton("Facade", tabs)
-        self.floor_tab = QPushButton("Floor Plan", tabs)
-        for tab in (self.facade_tab, self.floor_tab):
-            tab.setObjectName("projectDetailsTab")
-            tab.setCheckable(True)
-            tabs_layout.addWidget(tab, 1)
+        self.facade_tab = NavigationRow("Facade", parent=self.body)
+        self.floor_tab = NavigationRow("Floor Plan", parent=self.body)
         self.facade_tab.clicked.connect(lambda: self._show_section("facade"))
         self.floor_tab.clicked.connect(lambda: self._show_section("floor"))
-        self.body_layout.addWidget(tabs)
+        self.body_layout.addWidget(self.facade_tab, 0, Qt.AlignLeft)
 
         self.facade_group = QWidget(self.body)
         facade_layout = QVBoxLayout(self.facade_group)
-        facade_layout.setContentsMargins(0, 5, 0, 0)
+        facade_layout.setContentsMargins(14, 0, 0, 7)
         facade_layout.setSpacing(6)
         facade_row = QWidget(self.facade_group)
         facade_row_layout = QHBoxLayout(facade_row)
@@ -2049,10 +2041,11 @@ class ProjectDetailsPanel(Plan3DToolPanel):
         for button in (self.facade_analysis, self.floor_areas, self.add_pivot):
             facade_layout.addWidget(button)
         self.body_layout.addWidget(self.facade_group)
+        self.body_layout.addWidget(self.floor_tab, 0, Qt.AlignLeft)
 
         self.floor_group = QWidget(self.body)
         floor_layout = QVBoxLayout(self.floor_group)
-        floor_layout.setContentsMargins(0, 5, 0, 0)
+        floor_layout.setContentsMargins(14, 0, 0, 7)
         floor_layout.setSpacing(6)
         floor_row = QWidget(self.floor_group)
         floor_row_layout = QHBoxLayout(floor_row)
@@ -2077,8 +2070,13 @@ class ProjectDetailsPanel(Plan3DToolPanel):
             entry.setPlaceholderText("Enter cm")
             entry.setValidator(QDoubleValidator(-100000.0, 100000.0, 2, entry))
             entry.textChanged.connect(self._dimensions_changed)
-            floor_layout.addWidget(field_label)
-            floor_layout.addWidget(entry)
+            dimension_row = QWidget(self.floor_group)
+            dimension_layout = QHBoxLayout(dimension_row)
+            dimension_layout.setContentsMargins(0, 0, 0, 0)
+            dimension_layout.setSpacing(5)
+            dimension_layout.addWidget(field_label, 1)
+            dimension_layout.addWidget(entry, 1)
+            floor_layout.addWidget(dimension_row)
             self.dimensions[key] = entry
         self.body_layout.addWidget(self.floor_group)
 
@@ -2104,15 +2102,14 @@ class ProjectDetailsPanel(Plan3DToolPanel):
         self.layout().addWidget(footer)
 
         self.setStyleSheet(self.styleSheet() + """
-            QPushButton#projectDetailsTab, QWidget#projectDetailsFooter QPushButton,
+            QWidget#projectDetailsFooter QPushButton,
             QWidget#plan3dToolPanel QPushButton {
                 background: #252525; border: 1px solid #464646;
                 border-radius: 6px; color: #ececec; padding: 5px;
             }
-            QPushButton#projectDetailsTab:hover, QWidget#plan3dToolPanel QPushButton:hover {
+            QWidget#plan3dToolPanel QPushButton:hover {
                 border-color: #f39743; background: #333333;
             }
-            QPushButton#projectDetailsTab:checked { background: #424242; border-color: #777777; }
             QPushButton:disabled { color: #777777; background: #202020; border-color: #333333; }
             QLineEdit#projectDetailsMeasure, QWidget#plan3dToolPanel QComboBox {
                 background: #202020; color: #eeeeee; border: 1px solid #484848;
@@ -2128,15 +2125,16 @@ class ProjectDetailsPanel(Plan3DToolPanel):
         self.floor_name.currentTextChanged.connect(self._floor_changed)
         self.confirm_button.clicked.connect(self.confirm_details)
         self.create_button.clicked.connect(self.create_model)
-        self._show_section("facade")
+        self.facade_group.hide()
+        self.floor_group.hide()
         self._update_buttons()
 
     def _show_section(self, section: str) -> None:
-        facade = section == "facade"
-        self.facade_tab.setChecked(facade)
-        self.floor_tab.setChecked(not facade)
-        self.facade_group.setVisible(facade)
-        self.floor_group.setVisible(not facade)
+        group = self.facade_group if section == "facade" else self.floor_group
+        header = self.facade_tab if section == "facade" else self.floor_tab
+        opening = not group.isVisible()
+        group.setVisible(opening)
+        header.set_active(opening)
 
     def attach_viewport(self, viewport) -> None:
         if viewport is self._viewport:
