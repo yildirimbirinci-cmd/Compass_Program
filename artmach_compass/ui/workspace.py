@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QLineEdit,
+    QMessageBox,
     QToolButton,
     QScrollArea,
     QScrollBar,
@@ -1984,6 +1985,8 @@ class InspectorPanel(QFrame):
 class TopCommandBar(QFrame):
     """Compact production-style command bar inspired by the approved layout."""
 
+    mode_requested = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("topCommandBar")
@@ -1995,6 +1998,7 @@ class TopCommandBar(QFrame):
 
         brand = QFrame(self)
         brand.setObjectName("brandBlock")
+        brand.setFixedWidth(380)
         brand_layout = QHBoxLayout(brand)
         brand_layout.setContentsMargins(0, 4, 10, 4)
         brand_layout.setSpacing(4)
@@ -2014,10 +2018,12 @@ class TopCommandBar(QFrame):
         brand_layout.addWidget(version_label, 0, Qt.AlignLeft | Qt.AlignBottom)
         layout.addWidget(brand)
 
+        self.mode_buttons = {}
         for text, subtitle, active in (
             ("AI", "Yapay Zeka", False),
             ("PROJECTS", "Projeler", False),
             ("LIBRARY", "Kütüphane", True),
+            ("PLAN3D", "CAD to 3D", False),
         ):
             button = QPushButton(f"{text}\n{subtitle}", self)
             button.setObjectName("topModeButton")
@@ -2025,6 +2031,8 @@ class TopCommandBar(QFrame):
             button.setCheckable(True)
             button.setChecked(active)
             button.setFixedSize(118, 46)
+            button.clicked.connect(lambda _checked=False, mode=text: self.mode_requested.emit(mode))
+            self.mode_buttons[text] = button
             layout.addWidget(button)
 
         layout.addSpacing(18)
@@ -2053,6 +2061,15 @@ class TopCommandBar(QFrame):
         profile.setObjectName("profileButton")
         profile.setFixedHeight(38)
         layout.addWidget(profile)
+
+
+    def set_active_mode(self, mode: str) -> None:
+        for name, button in self.mode_buttons.items():
+            active = name == mode
+            button.setChecked(active)
+            button.setProperty("active", active)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _open_log_file(self) -> None:
         from artmach_compass.core.app_logging import log_file_path
@@ -2127,7 +2144,11 @@ class CompassWorkspace(QWidget):
         self._layout.addWidget(self.left_panel, 0)
         self._layout.addWidget(self.center_panel, 1)
         self._layout.addWidget(self.right_panel, 0)
-        shell.addWidget(self.body, 1)
+        self._mode_stack = QStackedWidget(self)
+        self._mode_stack.addWidget(self.body)
+        shell.addWidget(self._mode_stack, 1)
+        self._plan3d_window = None
+        self.top_bar.mode_requested.connect(self._switch_mode)
 
         self.status_bar = BottomStatusBar(self)
         shell.addWidget(self.status_bar)
@@ -2136,6 +2157,23 @@ class CompassWorkspace(QWidget):
         self._standby_initialized = True
 
         self._apply_responsive_layout(1560, 1150)
+
+    def _switch_mode(self, mode: str) -> None:
+        if mode != "PLAN3D":
+            self._mode_stack.setCurrentWidget(self.body)
+            self.top_bar.set_active_mode(mode)
+            return
+        if self._plan3d_window is None:
+            try:
+                from artmach_compass.plan3d_integration import create_plan3d_window
+                self._plan3d_window = create_plan3d_window()
+                self._mode_stack.addWidget(self._plan3d_window)
+            except Exception as exc:
+                QMessageBox.warning(self, "Plan3D", str(exc))
+                self.top_bar.set_active_mode("LIBRARY")
+                return
+        self._mode_stack.setCurrentWidget(self._plan3d_window)
+        self.top_bar.set_active_mode("PLAN3D")
 
     def set_standby_mode(self, active: bool, *, animated: bool = True) -> None:
         self._standby_active = False
