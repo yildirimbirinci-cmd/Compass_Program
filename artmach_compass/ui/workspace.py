@@ -2134,7 +2134,8 @@ class ProjectDetailsPanel(Plan3DToolPanel):
         header = self.facade_tab if section == "facade" else self.floor_tab
         opening = not group.isVisible()
         group.setVisible(opening)
-        header.set_active(opening)
+        header.set_active(True)
+        QTimer.singleShot(240, lambda selected=header: selected.set_active(False))
 
     def attach_viewport(self, viewport) -> None:
         if viewport is self._viewport:
