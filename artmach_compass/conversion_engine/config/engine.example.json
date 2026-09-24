@@ -1,0 +1,9 @@
+{
+  "max_exe": "C:\\Program Files\\Autodesk\\3ds Max 2020\\3dsmax.exe",
+  "blender_exe": "C:\\Program Files\\Artmach Compass\\Engine\\Blender\\blender.exe",
+  "timeout_seconds": 1800,
+  "keep_temp": true,
+  "export_hidden": false,
+  "include_cameras": false,
+  "include_lights": false
+}

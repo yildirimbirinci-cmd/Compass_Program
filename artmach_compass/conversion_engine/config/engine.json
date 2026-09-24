@@ -1,0 +1,9 @@
+{
+  "max_exe": "",
+  "blender_exe": "",
+  "timeout_seconds": 1800,
+  "keep_temp": true,
+  "export_hidden": false,
+  "include_cameras": false,
+  "include_lights": false
+}
